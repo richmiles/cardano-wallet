@@ -254,6 +254,7 @@ test-suite unit
       base
     , aeson
     , aeson-qq
+    , base58-bytestring
     , bytestring
     , cardano-addresses
     , cardano-api

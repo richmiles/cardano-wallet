@@ -26,6 +26,10 @@ import Cardano.Wallet.Primitive.Types.TokenBundle.Gen
     ( genTokenBundleSmallRangePositive, shrinkTokenBundleSmallRangePositive )
 import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn (..), TxOut (..) )
+import Data.ByteString.Base58
+    ( bitcoinAlphabet, decodeBase58 )
+import Data.Maybe
+    ( fromJust )
 import Test.Hspec
     ( Spec, describe, it )
 import Test.Hspec.Extra
@@ -75,6 +79,13 @@ spec = do
         describe "asCollateral" $ do
           it "is equivalent to the composition of classifyCollateralAddress and pureAdaValue" $
               property prop_equivalence
+
+test =
+    let
+        byronAddr =
+            Address . fromJust . decodeBase58 bitcoinAlphabet $ "37btjrVyb4KFsMoVwPRZ5aJko48uBFFUnJ46eV3vC3uBCC65mj5BfbGP6jYDfhojm8MAayHo4RPvWH4x852FcJq8SHazCx31FJM2TfDpV9Azrc8UKD"
+    in
+        classifyCollateralAddress byronAddr === Left IsABootstrapAddr
 
 prop_pureAdaValue :: TokenBundle -> Property
 prop_pureAdaValue bundle =
