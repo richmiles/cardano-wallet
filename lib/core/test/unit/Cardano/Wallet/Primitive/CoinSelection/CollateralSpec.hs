@@ -12,7 +12,6 @@ import Cardano.Wallet.Primitive.CoinSelection.Collateral
     ( AddrNotSuitableForCollateral (..)
     , asCollateral
     , classifyCollateralAddress
-    , pureAdaValue
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
@@ -38,8 +37,6 @@ import Test.QuickCheck
     ( Arbitrary (..)
     , Gen
     , Property
-    , checkCoverage
-    , cover
     , forAll
     , forAllShrink
     , oneof
@@ -64,9 +61,6 @@ import qualified Test.Shelley.Spec.Ledger.Serialisation.EraIndepGenerators as L
 spec :: Spec
 spec = do
     parallel $ describe "collateral suitability" $ do
-        describe "pureAdaValue" $ do
-            it "only returns when token bundle has only ADA" $
-                property prop_pureAdaValue
         describe "classifyCollateralAddress" $ do
           it "classifies Byron/bootstrap addresses correctly" $
               property prop_bootstrapAddresses
@@ -86,20 +80,6 @@ test =
             Address . fromJust . decodeBase58 bitcoinAlphabet $ "37btjrVyb4KFsMoVwPRZ5aJko48uBFFUnJ46eV3vC3uBCC65mj5BfbGP6jYDfhojm8MAayHo4RPvWH4x852FcJq8SHazCx31FJM2TfDpV9Azrc8UKD"
     in
         classifyCollateralAddress byronAddr === Left IsABootstrapAddr
-
-prop_pureAdaValue :: TokenBundle -> Property
-prop_pureAdaValue bundle =
-    let
-        result = pureAdaValue bundle
-    in
-        checkCoverage $
-        cover 30 (not (TokenBundle.isCoin bundle))
-            "Token bundle has at least 1 non-ada asset" $
-        cover 30 (TokenBundle.isCoin bundle)
-            "Token bundle has no non-ada assets" $
-        if TokenBundle.isCoin bundle
-        then result === Just (TokenBundle.coin bundle)
-        else result === Nothing
 
 prop_bootstrapAddresses :: Property
 prop_bootstrapAddresses =
@@ -126,7 +106,7 @@ prop_equivalence (txIn, txOut@(TxOut addr toks)) =
     asCollateral (txIn, txOut)
     ===
     (either (const Nothing) Just (classifyCollateralAddress addr)
-     >> pureAdaValue toks)
+     >> TokenBundle.toCoin toks)
 
 instance Arbitrary TokenBundle where
     arbitrary = genTokenBundleSmallRangePositive

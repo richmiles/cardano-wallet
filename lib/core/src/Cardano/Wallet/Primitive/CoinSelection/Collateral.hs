@@ -14,7 +14,6 @@
 
 module Cardano.Wallet.Primitive.CoinSelection.Collateral
     ( classifyCollateralAddress
-    , pureAdaValue
     , asCollateral
     , AddrNotSuitableForCollateral(..)
     ) where
@@ -25,8 +24,6 @@ import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin )
-import Cardano.Wallet.Primitive.Types.TokenBundle
-    ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn (..), TxOut (..) )
 
@@ -56,7 +53,7 @@ asCollateral
     -- ^ The total ADA value of that UTxO if it is suitable for collateral,
     -- otherwise Nothing.
 asCollateral (_txIn, txOut) = do
-   coin <- pureAdaValue $ tokens txOut
+   coin <- TokenBundle.toCoin $ tokens txOut
 
    case classifyCollateralAddress (address txOut) of
      Left IsABootstrapAddr ->
@@ -67,15 +64,6 @@ asCollateral (_txIn, txOut) = do
          Nothing
      Right _addr ->
          Just coin
-
--- | Returns the total ADA value of the TokenBundle iff the TokenBundle contains
--- only ADA and no other tokens.
-pureAdaValue :: TokenBundle -> Maybe Coin
-pureAdaValue toks
-    | TokenBundle.isCoin toks
-        = Just $ TokenBundle.coin toks
-    | otherwise
-        = Nothing
 
 -- | Reasons why an address might be considered unsuitable for a collateral
 -- input.
