@@ -41,7 +41,7 @@ import Data.Maybe
 import Numeric
     ( showHex )
 import Test.Hspec
-    ( Expectation, shouldBe )
+    ( Expectation, Spec, describe, it, parallel, shouldBe )
 import Test.QuickCheck
     ( Arbitrary (..)
     , Gen
@@ -634,25 +634,43 @@ instance Arbitrary TxOut where
 
 -- Finally we group the tests for easy execution
 
--- spec :: Spec
--- spec = do
---     parallel $ describe "collateral suitability" $ do
---         describe "classifyCollateralAddress" $ do
---           it "classifies Byron/bootstrap addresses correctly" $
---               property prop_bootstrapAddresses
---           it "classifies script addresses correctly" $
---               property prop_scriptAddresses
---           it "classifies key hash (VK input) addresses correctly" $
---               property prop_keyHashAddresses
---           it "classifies malformed addresses correctly" $
---               property prop_malformedAddresses
---           describe "golden" $ do
---               it "classifies byron address" unit_byronGolden
---               it "classifies good address" unit_shelleyPaymentGolden
---               it "classifies script address" unit_scriptGolden
---         describe "asCollateral" $ do
---           it "is equivalent to the composition of classifyCollateralAddress and pureAdaValue" $
---               property prop_equivalence
+spec :: Spec
+spec = do
+    parallel $ do
+        describe "address types" $ do
+            describe "generators" $
+              it "generates values with sufficient coverage" $
+                  property prop_genAddressType_coverage
+            it "serialise/deserialise roundtrips" $
+                property prop_header_roundtrips
+            it "classifies byron address type correctly" $
+                property prop_addressType_byron
+            it "classifies stake address type correctly" $
+                property prop_addressType_stake
+            it "classifies shelley key hash type correctly" $
+                property prop_addressType_shelleyKeyHash
+            it "classifies shelley script hash type correctly" $
+                property prop_addressType_shelleyScriptHash
+            it "golden" $ do
+                unit_addressType_byronGolden
+                unit_addressType_shelleyEnterprisePaymentGolden
+                unit_addressType_stakeAddrGolden
+                unit_addressType_pointerAddrGolden
+                unit_addressType_delegationAddrGolden
+        describe "collateral suitability" $ do
+            describe "generators and shrinkers" $ do
+              it "generates values with sufficient coverage" $
+                  property prop_genAddress_coverage
+              it "shrink maintains validity" $
+                  property prop_simplifiedAddress_validAddress
+              it "shrink maintains type" $
+                  property prop_simplifiedAddress_typeMaintained
+            describe "classifyCollateralAddress" $
+                it "classifies any address correctly" $
+                    property prop_classifyCollateralAddress
+            describe "asCollateral" $
+                it "is equivalent to classifyCollateralAddress" $
+                    property prop_equivalence
 
 -- The following golden keys were generated from the recovery phrase:
 -- [change twin tired knee syrup cover dog glare canvas canvas jump egg]
