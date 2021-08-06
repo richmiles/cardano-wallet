@@ -16,8 +16,6 @@ import Cardano.Wallet.Primitive.CoinSelection.Collateral
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
-import Cardano.Wallet.Primitive.Types.Address.Gen
-    ( genAddressSmallRange, shrinkAddressSmallRange )
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash (..) )
 import Cardano.Wallet.Primitive.Types.TokenBundle
@@ -28,8 +26,6 @@ import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn (..), TxOut (..) )
 import Cardano.Wallet.Unsafe
     ( unsafeBech32Decode )
-import Cardano.Wallet.Unsafe
-    ( unsafeFromHex )
 import Control.Monad
     ( replicateM_ )
 import Data.Bits
@@ -40,22 +36,17 @@ import Data.ByteString.Base58
     ( bitcoinAlphabet, decodeBase58 )
 import Data.Function
     ( (&) )
-import Data.Int
-    ( Int64 )
 import Data.Maybe
     ( fromJust, isJust, isNothing )
-import Data.String
-    ( fromString )
 import Numeric
     ( showHex )
 import Test.Hspec
-    ( Expectation, Spec, describe, it, shouldBe )
-import Test.Hspec.Extra
-    ( parallel )
+    ( Expectation, shouldBe )
 import Test.QuickCheck
     ( Arbitrary (..)
     , Gen
     , Property
+    , allProperties
     , checkCoverage
     , counterexample
     , cover
@@ -76,7 +67,6 @@ import Test.QuickCheck
 import Test.QuickCheck.Hedgehog
     ( hedgehog )
 
-import qualified Cardano.Binary as Binary
 import qualified Cardano.Ledger.Address as L
 import qualified Cardano.Ledger.Credential as L
 import qualified Cardano.Ledger.Crypto as CC
@@ -95,7 +85,7 @@ import qualified Test.Shelley.Spec.Ledger.Serialisation.Generators.Genesis as L
 -- In the realm of cardano-ledger-specs, we recognize the following types of
 -- addresses:
 --   (see https://hydra.iohk.io/build/6752483/download/1/ledger-spec.pdf):
---  
+--
 -- | Address type       | Payment Credential | Stake Credential | Header, first nibble |
 -- |--------------------+--------------------+------------------+----------------------|
 -- | Base address       | keyhash            | keyhash          |                 0000 |
@@ -110,7 +100,7 @@ import qualified Test.Shelley.Spec.Ledger.Serialisation.Generators.Genesis as L
 -- | Stake address      | -                  | keyhash          |                 1110 |
 -- |                    | -                  | scripthash       |                 1111 |
 -- | Future formats     | ?                  | ?                |            1001-1101 |
--- 
+--
 -- We represent these types of addresses with the following data types:
 
 -- | The type of the address
@@ -308,6 +298,16 @@ unit_addressType_stakeAddrGolden =
     B.runGet getHeader stakeAddrGolden
         `shouldBe` StakeAddress CredentialKeyHash
 
+unit_addressType_pointerAddrGolden :: Expectation
+unit_addressType_pointerAddrGolden =
+    B.runGet getHeader pointerAddrGolden
+        `shouldBe` PointerAddress CredentialKeyHash
+
+unit_addressType_delegationAddrGolden :: Expectation
+unit_addressType_delegationAddrGolden =
+    B.runGet getHeader delegationAddrGolden
+        `shouldBe` BaseAddress CredentialKeyHash CredentialKeyHash
+
 -- TODO generate more unit tests for each type of address.
 
 -- The funds associated with an address are considered suitable for use as
@@ -323,12 +323,28 @@ unit_addressType_stakeAddrGolden =
 -- 3. That future format addresses are always rejected.
 --
 -- That's it really. We also want to assert that our generators cover the full
--- range of possible address types, including future and unknown formats.
+-- range of possible address types, including future and unknown formats. So we
+-- start by creating a generator that customizes it's frequency to ensure that
+-- every type of address is evenly covered ("genByronAddr" only generates one
+-- type of address so is given lower frequency than "genShelleyAddr", which must
+-- generate eight types of addresses). We also include Addresses that are just
+-- an arbitrary set of bytes (very likely to be invalid).
 
-prop_classifyCollateralAddress :: Property
-prop_classifyCollateralAddress =
-    withMaxSuccess 2000 $
-    forAllShrink genAnyAddress shrinkAddress $ \addr@(Address addrBytes) -> do
+-- | Generate an Address, covers the full range of address types plus invalid
+-- addresses.
+genAnyAddress :: Gen Address
+genAnyAddress =
+    frequency [ (10, asAddress <$> genShelleyAddr)
+              , (1, asAddress <$> genByronAddr)
+              , (2, asStakeAddress <$> genStakeAddr)
+              , (3, Address <$> arbitrary)
+              ]
+
+-- | Check that @genAnyAddress@ has sufficient coverage.
+prop_genAddress_coverage :: Property
+prop_genAddress_coverage =
+    withMaxSuccess 1000 $
+    forAll genAnyAddress $ \addr@(Address addrBytes) -> do
         let addrType = runGetMaybe getHeader $ BSL.fromStrict addrBytes
         coverTable "Address types"
             [ ("Just (BaseAddress CredentialKeyHash CredentialKeyHash)"       , 5)
@@ -342,118 +358,69 @@ prop_classifyCollateralAddress =
             , ("Just (StakeAddress CredentialKeyHash)"                        , 5)
             , ("Just (StakeAddress CredentialScriptHash)"                     , 5)
             , ("Just BootstrapAddress"                                        , 5)
+            , ("Nothing"                                                      , 5)
             ] $
-            tabulate "Address types" [show addrType] $ do
-                if isNothing (L.deserialiseAddr addrBytes :: Maybe (L.Addr CC.StandardCrypto)) && isNothing (L.deserialiseRewardAcnt addrBytes :: Maybe (L.RewardAcnt CC.StandardCrypto))
-                then classifyCollateralAddress addr === Left IsAMalformedOrUnknownAddr
-                else
-                    case addrType of
-                        Nothing ->
-                            classifyCollateralAddress addr
-                                === Left IsAMalformedOrUnknownAddr
-                        Just (StakeAddress _) ->
-                            classifyCollateralAddress addr
-                                === Left IsAStakeAddr
-                        Just typ | hasScriptHashPayCred typ ->
-                            classifyCollateralAddress addr
-                                === Left IsAScriptAddr
-                        Just typ | hasKeyHashPayCred typ ->
-                            classifyCollateralAddress addr
-                                === Right addr
-                        Just other ->
-                            error "An AddressType was not handled"
-                & counterexample ("AddressType: " <> show addrType)
-                & counterexample ("Address hex: " <> asHex addrBytes)
+            tabulate "Address types" [show addrType] $ True === True
 
-
---
 -- Using real addresses for the generators is an important idea, as the domain
 -- of the classification function is the set of all addresses (really all
--- ByteStrings, thanks to our loose representation of Addresses, but because
--- most of the set of all ByteStrings is not helpful to us, we will test the
--- classification function with only a small percentage of unstructured
--- ByteStrings). However, real addresses make for awful counterexamples, so
--- after generating an address, we try to determine what kind of address it is
--- by inspecting the first four bits: If it is an address format we recognize,
--- we shrink towards an address that has the same first four bits, but 0 bits
--- everywhere else. This forms a valid address that is easier on the eyes,
--- except in two cases: stake addresses and bootstrap addresses. We can offer no
--- shrinkage for those two kinds of addresses, but try to provide a good
--- explanation using `counterExample`. This is a helpful strategy because at
--- this current point in time collateral suitability can be determined simply by
--- inspecting the first four bits, so that is the most important piece of
--- information for debugging.
+-- ByteStrings, thanks to our loose representation of Addresses, but we account
+-- for that in our generator already). However, real addresses make for awful
+-- counterexamples, so after generating an address, we try to determine what
+-- kind of address it is by inspecting the first four bits: If it is an address
+-- format we recognize, we shrink towards an address that has the same first
+-- four bits, but 0 bits everywhere else. This forms a valid address that is
+-- easier on the eyes, except in two cases: stake addresses and bootstrap
+-- addresses. We can offer no shrinkage for those two kinds of addresses, but
+-- try to provide a good explanation using `counterExample`. This is a helpful
+-- strategy because at this current point in time collateral suitability can be
+-- determined simply by inspecting the first four bits, so that is the most
+-- important piece of information for debugging.
+--
+-- Here is an example of test output without shrinking:
+-- Address "p\r\148\225ts.\249\170\231?9Z\180E\a\191\169\131\214P#\193\SUB\149\US\f2\228\204u\NUL\SOH"
+-- Address hex: 71d94e174732ef9aae73f395ab4457bfa983d65023c11a951fc32e4cc7501
+-- AddressType: Just (EnterpriseAddress CredentialScriptHash)
+--
+-- And here is an example of test output with shrinking:
+-- Address "p\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL"
+-- Address hex: 700000000000000000000000000000
+-- AddressType: Just (EnterpriseAddress CredentialScriptHash)
 
-runGetMaybe :: B.Get a -> BSL.ByteString -> Maybe a
-runGetMaybe parser x =
-    either (const Nothing) (\(_, _, a) -> Just a) $ B.runGetOrFail parser x
-
-asHex :: ByteString -> String
-asHex = BS.foldr showHex ""
-
-
-hasKeyHashPayCred :: AddressType -> Bool
-hasKeyHashPayCred (BaseAddress CredentialScriptHash _)     = False
-hasKeyHashPayCred (BaseAddress CredentialKeyHash _)        = True
-hasKeyHashPayCred (PointerAddress CredentialScriptHash)    = False
-hasKeyHashPayCred (PointerAddress CredentialKeyHash)       = True
-hasKeyHashPayCred (EnterpriseAddress CredentialScriptHash) = False
-hasKeyHashPayCred (EnterpriseAddress CredentialKeyHash)    = True
-hasKeyHashPayCred (StakeAddress _)                         = False
-hasKeyHashPayCred (BootstrapAddress)                       = True
-
-hasScriptHashPayCred :: AddressType -> Bool
-hasScriptHashPayCred (BaseAddress CredentialScriptHash _)     = True
-hasScriptHashPayCred (BaseAddress CredentialKeyHash _)        = False
-hasScriptHashPayCred (PointerAddress CredentialScriptHash)    = True
-hasScriptHashPayCred (PointerAddress CredentialKeyHash)       = False
-hasScriptHashPayCred (EnterpriseAddress CredentialScriptHash) = True
-hasScriptHashPayCred (EnterpriseAddress CredentialKeyHash)    = False
-hasScriptHashPayCred (StakeAddress _)                         = False
-hasScriptHashPayCred (BootstrapAddress)                       = False
-
-shrinkAddress :: Address -> [Address]
-shrinkAddress addr =
-    case simplifiedAddress addr of
-        Nothing ->
-            -- There are some address types we can't meaningfully shrink.
-            []
-        Just simplified ->
-            -- Otherwise we can shrink to the simplified address.
-            [simplified]
-
+-- | Attempt to simplify an address. Only shelley addresses can be simplified
+-- and are simplified towards a binary encoding of addrType:(set of null bytes).
 simplifiedAddress :: Address -> Maybe Address
 simplifiedAddress (Address addrBytes) = do
-    -- Don't try to simplify malformed addresses
+    -- Don't try to simplify malformed addresses or stake addresses
     _ <- L.deserialiseAddr addrBytes :: Maybe (L.Addr CC.StandardCrypto)
 
-    bytes <- case B.runGetOrFail getHeader (BSL.fromStrict addrBytes) of
-        Right (_, _, BootstrapAddress) ->
+    bytes <- case runGetMaybe getHeader (BSL.fromStrict addrBytes) of
+        Just BootstrapAddress ->
             Nothing
-        Right (_, _, StakeAddress _) ->
+        Just (StakeAddress _) ->
             Nothing
-        Right (_, _, addr@(BaseAddress _ _)) -> do
+        Just addr@(BaseAddress _ _) -> do
             Just $ B.runPut $ do
                 putHeader addr
                 -- payload for base addr is two 28-byte bytestrings
                 putNullBytes 28
                 putNullBytes 28
-        Right (_, _, addr@(PointerAddress _)) ->
+        Just addr@(PointerAddress _) ->
             Just $ B.runPut $ do
                 putHeader addr
                 -- payload for pointer addr is one 28-byte bytestring followed
-                -- by three unsigned ints of variable size (in this case two 
+                -- by three unsigned ints of variable size (in this case two
                 -- bytes each).
                 putNullBytes 28
                 putNullBytes 2
                 putNullBytes 2
                 putNullBytes 2
-        Right (_, _, addr@(EnterpriseAddress _)) ->
+        Just addr@(EnterpriseAddress _) ->
             Just $ B.runPut $ do
                 putHeader addr
                 -- payload for enterprise addr is one 28-byte bytestring
                 putNullBytes 28
-        Left _ ->
+        Nothing ->
             Nothing
 
     pure $ Address $ BSL.toStrict bytes
@@ -467,63 +434,205 @@ simplifiedAddress (Address addrBytes) = do
         putNullByte :: B.Put
         putNullByte = B.putWord8 0b00000000
 
--- | We want to assert that when we simplify an address:
+-- Of course, there are some properties we want to assert about this function.
+-- When we simplify an address:
 --
+--   Given the address can be simplified,
 --   - the simplified address is still a valid address
 --   - the type of the simplified address matches the type of the original
 --     address (address type is preserved)
 
+-- | Assert that if an address can be simplified, the simplified address is
+-- still a valid address.
 prop_simplifiedAddress_validAddress :: Property
 prop_simplifiedAddress_validAddress =
     forAll genAnyAddress $ \addr@(Address addrBytes) ->
         checkCoverage $
-          cover 30 (isNothing $ simplifiedAddress addr)
-              "couldn't simplify address"  $
-          cover 30 (isJust $ simplifiedAddress addr)
-              "could simplify address"  $
-          case simplifiedAddress addr of
-              Nothing ->
-                  True === True
-              Just simplified@(Address simplifiedBytes) ->
-                  let
-                      originalAddress :: Maybe (L.Addr CC.StandardCrypto)
-                      originalAddress = L.deserialiseAddr addrBytes 
+            cover 30 (isNothing $ simplifiedAddress addr)
+                "couldn't simplify address"  $
+            cover 30 (isJust $ simplifiedAddress addr)
+                "could simplify address"  $
+            case simplifiedAddress addr of
+                Nothing ->
+                    True === True
+                Just simplified@(Address simplifiedBytes) ->
+                    let
+                        originalAddress :: Maybe (L.Addr CC.StandardCrypto)
+                        originalAddress = L.deserialiseAddr addrBytes
 
-                      simplifiedAddress :: Maybe (L.Addr CC.StandardCrypto)
-                      simplifiedAddress = L.deserialiseAddr simplifiedBytes
-                  in
-                      isJust originalAddress === isJust simplifiedAddress
-                      & counterexample
-                          ("Simplified: " <> show simplifiedAddress <>
-                           ", bytes (hex): " <>
-                              BS.foldr showHex "" simplifiedBytes
-                          )
-                      & counterexample
-                          ("Original: " <> show originalAddress <>
-                           ", bytes (hex): " <>
-                              BS.foldr showHex "" addrBytes
-                          )
+                        simplifiedAddress :: Maybe (L.Addr CC.StandardCrypto)
+                        simplifiedAddress = L.deserialiseAddr simplifiedBytes
+                    in
+                        isJust originalAddress === isJust simplifiedAddress
+                        & counterexample
+                            ("Simplified: " <> show simplifiedAddress <>
+                             ", bytes (hex): " <>
+                                BS.foldr showHex "" simplifiedBytes
+                            )
+                        & counterexample
+                            ("Original: " <> show originalAddress <>
+                             ", bytes (hex): " <>
+                                BS.foldr showHex "" addrBytes
+                            )
 
+-- | Assert that if an address can be simplified, the type of the simplified
+-- address matches the type of the original address.
 prop_simplifiedAddress_typeMaintained :: Property
 prop_simplifiedAddress_typeMaintained =
     forAll genAnyAddress $ \addr@(Address addrBytes) ->
         checkCoverage $
-          cover 30 (isNothing $ simplifiedAddress addr)
-              "couldn't simplify address"  $
-          cover 30 (isJust $ simplifiedAddress addr)
-              "could simplify address"  $
-          case simplifiedAddress addr of
-              Nothing ->
-                  True === True
-              Just simplified@(Address simplifiedBytes) ->
-                  let
-                      originalAddressType =
-                          B.runGet getHeader (BSL.fromStrict addrBytes)
+            cover 30 (isNothing $ simplifiedAddress addr)
+                "couldn't simplify address"  $
+            cover 30 (isJust $ simplifiedAddress addr)
+                "could simplify address"  $
+            case simplifiedAddress addr of
+                Nothing ->
+                    True === True
+                Just simplified@(Address simplifiedBytes) ->
+                    let
+                        originalAddressType =
+                            B.runGet getHeader (BSL.fromStrict addrBytes)
 
-                      simplifiedAddressType =
-                          B.runGet getHeader (BSL.fromStrict simplifiedBytes)
-                  in
-                      originalAddressType === simplifiedAddressType
+                        simplifiedAddressType =
+                            B.runGet getHeader (BSL.fromStrict simplifiedBytes)
+                    in
+                        originalAddressType === simplifiedAddressType
+
+-- From this function we can generator a QuickCheck shrinker:
+
+-- | Try to shrink an address by simplifying it.
+shrinkAddress :: Address -> [Address]
+shrinkAddress addr =
+    case simplifiedAddress addr of
+        Nothing ->
+            -- There are some address types we can't meaningfully shrink.
+            []
+        Just simplified ->
+            -- Otherwise we can shrink to the simplified address, so long as we
+            -- actually changed the address
+            [simplified | simplified /= addr]
+
+-- With that out the way we can write our property test to ensure that
+-- classifyCollateral address behaves as expected:
+
+-- | Assert that, for any valid address, we only classify addresses with a key
+-- hash payment credential as being suitable for collateral.
+prop_classifyCollateralAddress :: Property
+prop_classifyCollateralAddress =
+    withMaxSuccess 2000 $
+    forAllShrink genAnyAddress shrinkAddress $ \addr@(Address addrBytes) -> do
+        let
+            addrType = runGetMaybe getHeader $ BSL.fromStrict addrBytes
+            validAddress = isValidAddress addr
+
+        checkCoverage $
+            cover 30 validAddress "valid address"  $
+            cover 10 (not validAddress) "invalid address"  $
+            if not validAddress
+            then
+                -- It will always fail invalid addresses
+                classifyCollateralAddress addr
+                    === Left IsAMalformedOrUnknownAddr
+            else
+                case addrType of
+                    -- Only unrecognized addresses are classified as malformed
+                    -- or unknown (i.e. we otherwise classify any known address
+                    -- according to it's type)
+                    Nothing ->
+                        classifyCollateralAddress addr
+                            === Left IsAMalformedOrUnknownAddr
+
+                    -- Stake addresses are not suitable for collateral
+                    Just (StakeAddress _) ->
+                        classifyCollateralAddress addr
+                            === Left IsAStakeAddr
+
+                    -- Script addresses are not suitable for collateral
+                    Just (BaseAddress CredentialScriptHash _) ->
+                        classifyCollateralAddress addr
+                            === Left IsAScriptAddr
+                    Just (PointerAddress CredentialScriptHash) ->
+                        classifyCollateralAddress addr
+                            === Left IsAScriptAddr
+                    Just (EnterpriseAddress CredentialScriptHash) ->
+                        classifyCollateralAddress addr
+                            === Left IsAScriptAddr
+
+                    -- The following addresses all have a key hash payment
+                    -- credential and are thus suitable for collateral
+                    Just (BaseAddress CredentialKeyHash _) ->
+                        classifyCollateralAddress addr
+                            === Right addr
+                    Just (PointerAddress CredentialKeyHash) ->
+                        classifyCollateralAddress addr
+                            === Right addr
+                    Just (EnterpriseAddress CredentialKeyHash) ->
+                        classifyCollateralAddress addr
+                            === Right addr
+                    Just BootstrapAddress ->
+                        classifyCollateralAddress addr
+                            === Right addr
+
+                & counterexample ("AddressType: " <> show addrType)
+                & counterexample ("Address hex: " <> asHex addrBytes)
+
+-- | Returns True if the given address parses as a known address.
+isValidAddress :: Address -> Bool
+isValidAddress (Address addrBytes) =
+  isJust (L.deserialiseAddr addrBytes
+          :: Maybe (L.Addr CC.StandardCrypto))
+  ||
+  isJust (L.deserialiseRewardAcnt addrBytes
+          :: Maybe (L.RewardAcnt CC.StandardCrypto))
+
+-- We want to assert many of the same properties about "asCollateral" as we did
+-- "classifyCollateralAddress". Rather than testing these properties twice, we
+-- use the following logic:
+--
+--   - Given that the implementation of "classifyCollateralAddress" is correct,
+--   - Given that the implementation of "TokenBundle.toCoin" is correct,
+--   - and that "asCollateral" is equivalent to a simple composition of
+--     "classifyCollateralAddress" and "TokenBundle.toCoin",
+--   - we can say that the implementation of "asCollateral" is also correct, so
+--     long as the composition operator is guranteed not to change the
+--     properties we are interested in.
+--
+-- The composition operator we are using here is the Maybe instance of (>>).
+-- Initially, the Either is demoted to a Maybe, which we know maintains the
+-- falsity of the value (Left = Nothing = False, Right = Just = True). From
+-- here, the composition operator discards the value inside the Maybe, and so
+-- the next argument can only depend on the falsity of the Maybe (indeed, it
+-- must). Thus the falsity of the properties is maintained (i.e. "asCollateral"
+-- will accept/reject an UTxO correctly, so long as "classifyCollateralAddress"
+-- classifies an address correctly). "asCollateral" will return the correct coin
+-- value so long as "TokenBundle.toCoin" is working correctly (tested
+-- elsewhere).
+--
+-- I wish I knew how to formally prove things using category theory concepts
+-- like monadic composition...
+
+-- | Assert that the "asCollateral" function is equivalent to the "composition"
+-- of "classifyCollateralAddress" and "TokenBundle.toCoin".
+prop_equivalence :: (TxIn, TxOut) -> Property
+prop_equivalence (txIn, txOut@(TxOut addr toks)) =
+    asCollateral (txIn, txOut)
+    ===
+    (either (const Nothing) Just (classifyCollateralAddress addr)
+     >> TokenBundle.toCoin toks)
+
+instance Arbitrary TokenBundle where
+    arbitrary = genTokenBundleSmallRangePositive
+    shrink = shrinkTokenBundleSmallRangePositive
+
+instance Arbitrary TxIn where
+    arbitrary = TxIn
+        <$> (Hash . B8.pack <$> vector 32)
+        <*> scale (`mod` 3) arbitrary
+
+instance Arbitrary TxOut where
+    arbitrary = TxOut <$> genAnyAddress <*> arbitrary
+
+-- Finally we group the tests for easy execution
 
 -- spec :: Spec
 -- spec = do
@@ -545,90 +654,41 @@ prop_simplifiedAddress_typeMaintained =
 --           it "is equivalent to the composition of classifyCollateralAddress and pureAdaValue" $
 --               property prop_equivalence
 
--- prop_bootstrapAddresses :: Property
--- prop_bootstrapAddresses =
---     forAll genBootstrapAddress $ \addr ->
---         classifyCollateralAddress addr === Right addr
-
--- prop_scriptAddresses :: Property
--- prop_scriptAddresses =
---     forAll genScriptAddress $ \addr ->
---         classifyCollateralAddress addr === Left IsAScriptAddr
-
--- prop_keyHashAddresses :: Property
--- prop_keyHashAddresses =
---     forAll genKeyHashAddress $ \addr ->
---         classifyCollateralAddress addr === Right addr
-
-prop_malformedAddresses :: Property
-prop_malformedAddresses =
-    forAllShrink genAddressSmallRange shrinkAddressSmallRange $ \addr ->
-        classifyCollateralAddress addr === Left IsAMalformedOrUnknownAddr
-
-prop_equivalence :: (TxIn, TxOut) -> Property
-prop_equivalence (txIn, txOut@(TxOut addr toks)) =
-    asCollateral (txIn, txOut)
-    ===
-    (either (const Nothing) Just (classifyCollateralAddress addr)
-     >> TokenBundle.toCoin toks)
-
-instance Arbitrary TokenBundle where
-    arbitrary = genTokenBundleSmallRangePositive
-    shrink = shrinkTokenBundleSmallRangePositive
-
-instance Arbitrary TxIn where
-    arbitrary = TxIn
-        <$> (Hash . B8.pack <$> vector 32)
-        <*> scale (`mod` 3) arbitrary
-
-instance Arbitrary TxOut where
-    arbitrary = TxOut <$> genAnyAddress <*> arbitrary
-
 -- The following golden keys were generated from the recovery phrase:
 -- [change twin tired knee syrup cover dog glare canvas canvas jump egg]
 
-shelleyEnterprisePaymentAddrGolden :: BSL.ByteString
-shelleyEnterprisePaymentAddrGolden = unsafeBech32Decode $ "addr_test1vpdylg53ekxh2404mfgw4pt4gfm7dc9dkc74ck0gtrld8uqewynck"
-
-stakeAddrGolden :: BSL.ByteString
-stakeAddrGolden = unsafeBech32Decode $ "stake_test1uztjkmlcknuv29pwuwd8wsk54q5eus56flqs4xy730yvnust8pvfj"
-
+-- cat recovery-phrase.txt | cardano-address key from-recovery-phrase Byron > root.prv
+-- cat root.prv | cardano-address key child 14H/42H | tee addr.prv | cardano-address key public --with-chain-code | cardano-address address bootstrap --root $(cat root.prv | cardano-address key public --with-chain-code) --network-tag testnet 14H/42H
 byronAddrGolden :: BSL.ByteString
 byronAddrGolden = BSL.fromStrict . fromJust . decodeBase58 bitcoinAlphabet $ "37btjrVyb4KFsMoVwPRZ5aJko48uBFFUnJ46eV3vC3uBCC65mj5BfbGP6jYDfhojm8MAayHo4RPvWH4x852FcJq8SHazCx31FJM2TfDpV9Azrc8UKD"
 
--- cardano-address key child 14H/42H
-unit_byronGolden :: Expectation
-unit_byronGolden =
-    let
-        byronAddr = Address . BSL.toStrict $ byronAddrGolden
-    in
-        classifyCollateralAddress byronAddr `shouldBe` Right byronAddr
+-- cat recovery-phrase.txt | cardano-address key from-recovery-phrase Shelley > root.prv
+-- cat root.prv | cardano-address key child 1852H/1815H/0H/2/0 > stake.prv
+-- cat stake.prv | cardano-address key public --with-chain-code | cardano-address address stake --network-tag testnet
+stakeAddrGolden :: BSL.ByteString
+stakeAddrGolden = unsafeBech32Decode
+    "stake_test1uztjkmlcknuv29pwuwd8wsk54q5eus56flqs4xy730yvnust8pvfj"
 
--- cardano-address key child 1852H/1815H/0H/0/0
-unit_shelleyEnterpriseKeyHashGolden :: Expectation
-unit_shelleyEnterpriseKeyHashGolden =
-    let
-        shelleyAddr = Address . BSL.toStrict $ shelleyEnterprisePaymentAddrGolden
-    in
-        classifyCollateralAddress shelleyAddr `shouldBe` Right shelleyAddr
+-- cat recovery-phrase.txt | cardano-address key from-recovery-phrase Shelley > root.prv
+-- cat root.prv | cardano-address key child 1852H/1815H/0H/0/0 > addr.prv
+-- cat addr.prv | cardano-address key public --with-chain-code | cardano-address address payment --network-tag 0 | cardano-address address pointer 42 14 0
+pointerAddrGolden :: BSL.ByteString
+pointerAddrGolden  = unsafeBech32Decode
+    "addr_test1gpdylg53ekxh2404mfgw4pt4gfm7dc9dkc74ck0gtrld8up2pcqqefucl2"
 
-unit_scriptGolden :: Expectation
-unit_scriptGolden =
-    let
-        scriptAddr =
-            Address . BSL.toStrict . unsafeBech32Decode
-            $ "addr_test1ypdylg53ekxh2404mfgw4pt4gfm7dc9dkc74ck0gtrld8u9wau4cw97kuzqhsk5phx3jdc0s8vcnzdpl0ek6sykkyxtsentrpt"
-    in
-        classifyCollateralAddress scriptAddr `shouldBe` Left IsAScriptAddr
+-- cat recovery-phrase.txt | cardano-address key from-recovery-phrase Shelley > root.prv
+-- cat root.prv | cardano-address key child 1852H/1815H/0H/2/0 > stake.prv
+-- cat root.prv | cardano-address key child 1852H/1815H/0H/0/0 > addr.prv
+-- cat addr.prv | cardano-address key public --with-chain-code | cardano-address address payment --network-tag testnet | cardano-address address delegation $(cat stake.prv | cardano-address key public --with-chain-code)
+delegationAddrGolden :: BSL.ByteString
+delegationAddrGolden = unsafeBech32Decode "addr_test1qpdylg53ekxh2404mfgw4pt4gfm7dc9dkc74ck0gtrld8uyh9dhl3d8cc52zacu6wapdf2pfnepf5n7pp2vfaz7ge8eqd4nn9s"
 
--- unit_stakeGolden :: Expectation
--- unit_stakeGolden =
---     let
---         stakeAddr =
---             Address . BSL.toStrict . unsafeBech32Decode
---             $ "stake_test1uztjkmlcknuv29pwuwd8wsk54q5eus56flqs4xy730yvnust8pvfj"
---     in
---         classifyCollateralAddress stake
+-- cat recovery-phrase.txt | cardano-address key from-recovery-phrase Shelley > root.prv
+-- cat root.prv | cardano-address key child 1852H/1815H/0H/0/0 > addr.prv
+-- cat addr.prv | cardano-address key public --with-chain-code | cardano-address address payment --network-tag testnet
+shelleyEnterprisePaymentAddrGolden :: BSL.ByteString
+shelleyEnterprisePaymentAddrGolden = unsafeBech32Decode
+    "addr_test1vpdylg53ekxh2404mfgw4pt4gfm7dc9dkc74ck0gtrld8uqewynck"
 
 -- To define these generators, we rely on explicit generators (and implicit
 -- Arbitrary instance generators) provided by
@@ -636,20 +696,6 @@ unit_scriptGolden =
 -- move the generators below to any of our "*.Gen" modules. Unfortunately
 -- "EraIndepGenerators" exports Arbitrary instances that will conflict with the
 -- Arbitrary instances we define in our Specs.
-
-genAnyAddress :: Gen Address
-genAnyAddress =
-    frequency [ (10, asAddress <$> genShelleyAddr)
-              , (1, asAddress <$> genByronAddr)
-              , (2, asStakeAddress <$> genStakeAddr)
-              , (1, Address <$> arbitrary)
-              ]
-
-asAddress :: L.Addr CC.StandardCrypto -> Address
-asAddress = Address . L.serialiseAddr
-
-asStakeAddress :: L.RewardAcnt crypto -> Address
-asStakeAddress = Address . L.serialiseRewardAcnt
 
 genShelleyAddr :: Gen (L.Addr CC.StandardCrypto)
 genShelleyAddr =
@@ -673,3 +719,18 @@ genByronAddr =
 
 genStakeAddr :: Gen (L.RewardAcnt CC.StandardCrypto)
 genStakeAddr = hedgehog L.genRewardAcnt
+
+-- Some helper functions
+
+asAddress :: L.Addr CC.StandardCrypto -> Address
+asAddress = Address . L.serialiseAddr
+
+asStakeAddress :: L.RewardAcnt crypto -> Address
+asStakeAddress = Address . L.serialiseRewardAcnt
+
+runGetMaybe :: B.Get a -> BSL.ByteString -> Maybe a
+runGetMaybe parser x =
+    either (const Nothing) (\(_, _, a) -> Just a) $ B.runGetOrFail parser x
+
+asHex :: ByteString -> String
+asHex = BS.foldr showHex ""
