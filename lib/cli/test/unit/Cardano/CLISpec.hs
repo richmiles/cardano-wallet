@@ -108,7 +108,8 @@ spec = do
 
         -- IDEA: We could traverse the optparse-applicative structure
         -- to get this list automatically.
-        mapM_ (usageGolden ($(getTestData) </> "Cardano" </> "CLISpec"))
+        let goldenDir = $(getTestData) </> "Cardano" </> "CLISpec"
+        mapM_ (usageGolden goldenDir)
             [ ["--help"]
             , ["recovery-phrase", "--help"]
             , ["recovery-phrase", "generate", "--help"]
