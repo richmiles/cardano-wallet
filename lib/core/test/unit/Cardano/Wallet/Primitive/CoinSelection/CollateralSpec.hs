@@ -709,7 +709,7 @@ spec = do
                   property prop_simplifiedAddress_validAddress
               it "shrink maintains type" $
                   property prop_simplifiedAddress_typeMaintained
-            describe "classifyCollateralAddress" $
+            describe "classifyCollateralAddress" $ do
                 it "classifies any address correctly" $
                     property prop_classifyCollateralAddress
                 it "golden" $ do
