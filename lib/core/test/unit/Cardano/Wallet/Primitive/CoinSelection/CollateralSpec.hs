@@ -585,6 +585,50 @@ isValidAddress (Address addrBytes) =
   isJust (L.deserialiseRewardAcnt addrBytes
           :: Maybe (L.RewardAcnt CC.StandardCrypto))
 
+-- To be extra sure, we also test classifyCollateralAddress with some golden
+-- addresses:
+
+unit_classifyCollateralAddress_byronGolden :: Expectation
+unit_classifyCollateralAddress_byronGolden =
+    let
+        addr =
+            Address . fromJust . decodeBase58 bitcoinAlphabet . BSL.toStrict
+            $ byronAddrGolden
+    in
+        classifyCollateralAddress addr `shouldBe` Right addr
+
+unit_classifyCollateralAddress_shelleyEnterprisePaymentGolden :: Expectation
+unit_classifyCollateralAddress_shelleyEnterprisePaymentGolden =
+    let
+        addr = Address . BSL.toStrict . unsafeBech32Decode
+               $ _ $ shelleyEnterprisePaymentAddrGolden
+    in
+        classifyCollateralAddress addr `shouldBe` Right addr
+
+unit_classifyCollateralAddress_stakeAddrGolden :: Expectation
+unit_classifyCollateralAddress_stakeAddrGolden =
+    let
+        addr = Address . BSL.toStrict . unsafeBech32Decode
+               $ _ $ stakeAddrGolden
+    in
+        classifyCollateralAddress addr `shouldBe` Left IsAStakeAddr
+
+unit_classifyCollateralAddress_pointerAddrGolden :: Expectation
+unit_classifyCollateralAddress_pointerAddrGolden =
+    let
+        addr = Address . BSL.toStrict . unsafeBech32Decode
+               $ _ $ pointerAddrGolden
+    in
+        classifyCollateralAddress addr `shouldBe` Right addr
+
+unit_classifyCollateralAddress_delegationAddrGolden :: Expectation
+unit_classifyCollateralAddress_delegationAddrGolden =
+    let
+        addr = Address . BSL.toStrict . unsafeBech32Decode
+               $ _ $ delegationAddrGolden
+    in
+        classifyCollateralAddress addr `shouldBe` Right addr
+
 -- We want to assert many of the same properties about "asCollateral" as we did
 -- "classifyCollateralAddress". Rather than testing these properties twice, we
 -- use the following logic:
@@ -668,9 +712,12 @@ spec = do
             describe "classifyCollateralAddress" $
                 it "classifies any address correctly" $
                     property prop_classifyCollateralAddress
-            describe "asCollateral" $
-                it "is equivalent to classifyCollateralAddress" $
-                    property prop_equivalence
+                it "golden" $ do
+                    unit_classifyCollateralAddress_byronGolden
+                    unit_classifyCollateralAddress_shelleyEnterprisePaymentGolden
+                    unit_classifyCollateralAddress_stakeAddrGolden
+                    unit_classifyCollateralAddress_pointerAddrGolden
+                    unit_classifyCollateralAddress_delegationAddrGolden
 
 -- The following golden keys were generated from the recovery phrase:
 -- [change twin tired knee syrup cover dog glare canvas canvas jump egg]
