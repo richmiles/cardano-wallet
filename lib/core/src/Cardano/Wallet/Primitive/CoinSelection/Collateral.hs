@@ -56,9 +56,9 @@ asCollateral (_txIn, txOut) = do
    coin <- TokenBundle.toCoin $ tokens txOut
 
    case classifyCollateralAddress (address txOut) of
-     Left IsABootstrapAddr ->
-         Nothing
      Left IsAScriptAddr ->
+         Nothing
+     Left IsAStakeAddr ->
          Nothing
      Left IsAMalformedOrUnknownAddr ->
          Nothing
@@ -68,10 +68,10 @@ asCollateral (_txIn, txOut) = do
 -- | Reasons why an address might be considered unsuitable for a collateral
 -- input.
 data AddrNotSuitableForCollateral
-    = IsABootstrapAddr
-    -- ^ The address is a bootstrap address
-    | IsAScriptAddr
+    = IsAScriptAddr
     -- ^ The address is some form of script address
+    | IsAStakeAddr
+    -- ^ The address is some form of stake address
     | IsAMalformedOrUnknownAddr
     -- ^ The address could not be parsed
     deriving (Eq, Show)
@@ -85,17 +85,21 @@ data AddrNotSuitableForCollateral
 classifyCollateralAddress
     :: Address
     -> Either AddrNotSuitableForCollateral Address
-classifyCollateralAddress addr =
+classifyCollateralAddress addr@(Address addrBytes) =
     case L.deserialiseAddr addrBytes of
-        -- If we couldn't deserialise the address, it's either a malformed
-        -- address or an address the Ledger doesn't know about.
+        -- If we couldn't deserialise the address, it's either a stake address,
+        -- a malformed address or an address the Ledger doesn't know about.
         Nothing ->
-            Left IsAMalformedOrUnknownAddr
+            -- Test if it's a stake address
+            case L.deserialiseRewardAcnt addrBytes of
+                Nothing ->
+                    Left IsAMalformedOrUnknownAddr
+                Just (_ :: L.RewardAcnt L.StandardCrypto) ->
+                    Left IsAStakeAddr
 
-        -- This is a bootstrap address, therefore not a suitable collateral
-        -- input.
+        -- This is a bootstrap address, therefore a suitable collateral input.
         Just (L.AddrBootstrap _bootstrapAddr) ->
-            Left IsABootstrapAddr
+            Right addr
 
         -- Otherwise, we further analyze the address.
         Just (L.Addr _network payCred _stakeRef) ->
@@ -110,6 +114,3 @@ classifyCollateralAddress addr =
                 -- suitable collateral input
                 L.KeyHashObj (_keyHash :: L.KeyHash 'L.Payment L.StandardCrypto) ->
                     Right addr
-
-    where
-        addrBytes = unAddress addr
