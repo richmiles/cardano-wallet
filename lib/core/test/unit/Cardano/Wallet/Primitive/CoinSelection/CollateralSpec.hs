@@ -77,6 +77,8 @@ import qualified Data.Binary.Put as B
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TL
 import qualified Test.Cardano.Chain.Common.Gen as Byron
 import qualified Test.Shelley.Spec.Ledger.Serialisation.EraIndepGenerators as L
 import qualified Test.Shelley.Spec.Ledger.Serialisation.Generators.Genesis as L
@@ -601,7 +603,8 @@ unit_classifyCollateralAddress_shelleyEnterprisePaymentGolden :: Expectation
 unit_classifyCollateralAddress_shelleyEnterprisePaymentGolden =
     let
         addr = Address . BSL.toStrict . unsafeBech32Decode
-               $ _ $ shelleyEnterprisePaymentAddrGolden
+               . TL.toStrict . TL.decodeUtf8
+               $ shelleyEnterprisePaymentAddrGolden
     in
         classifyCollateralAddress addr `shouldBe` Right addr
 
@@ -609,7 +612,8 @@ unit_classifyCollateralAddress_stakeAddrGolden :: Expectation
 unit_classifyCollateralAddress_stakeAddrGolden =
     let
         addr = Address . BSL.toStrict . unsafeBech32Decode
-               $ _ $ stakeAddrGolden
+               . TL.toStrict . TL.decodeUtf8
+               $ stakeAddrGolden
     in
         classifyCollateralAddress addr `shouldBe` Left IsAStakeAddr
 
@@ -617,7 +621,8 @@ unit_classifyCollateralAddress_pointerAddrGolden :: Expectation
 unit_classifyCollateralAddress_pointerAddrGolden =
     let
         addr = Address . BSL.toStrict . unsafeBech32Decode
-               $ _ $ pointerAddrGolden
+               . TL.toStrict . TL.decodeUtf8
+               $ pointerAddrGolden
     in
         classifyCollateralAddress addr `shouldBe` Right addr
 
@@ -625,7 +630,8 @@ unit_classifyCollateralAddress_delegationAddrGolden :: Expectation
 unit_classifyCollateralAddress_delegationAddrGolden =
     let
         addr = Address . BSL.toStrict . unsafeBech32Decode
-               $ _ $ delegationAddrGolden
+               . TL.toStrict . TL.decodeUtf8
+               $ delegationAddrGolden
     in
         classifyCollateralAddress addr `shouldBe` Right addr
 
